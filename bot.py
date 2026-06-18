@@ -1,7 +1,8 @@
 import os
 import random
 import logging
-import asyncio
+import requests
+from bs4 import BeautifulSoup
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -34,15 +35,142 @@ THAI_RESULTS: dict = {}
 LAOS_RESULTS: dict = {}
 
 # Predictions store
-# { match_id: { user_id: { "name": str, "pick": "home"|"away"|"draw" } } }
 PREDICTIONS: dict = {}
 
 # Football matches store
-# { match_id: { "home": str, "away": str, "date": str, "time": str,
-#               "result": None | "home" | "away" | "draw",
-#               "score": None | "X-X" } }
 FOOTBALL_MATCHES: dict = {}
 _match_counter = 0
+
+
+# ──────────────────────────────────────────────
+# Web Scraping Functions
+# ──────────────────────────────────────────────
+
+def fetch_thai_results_from_web() -> dict:
+    """
+    https://www.lottery.co.th/tag/lotto ကနေ ထိုင်းထီဂဏန်းတွေကို ဖတ်ယူတယ်
+    """
+    url = "https://www.lottery.co.th/tag/lotto"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, "html.parser")
+        
+        # ဒီနေရာမှာ ဝက်ဆိုက်ရဲ့ HTML ပုံစံအရ ဂဏန်းတွေကို ရှာတယ်
+        # ဝက်ဆိုက်က ပုံစံပြောင်းသွားရင် ဒီနေရာကို ပြင်ရမယ်
+        
+        results = {}
+        
+        # ဥပမာ - ပထမဆုကို ရှာတဲ့နည်း
+        first_prize = soup.find("div", class_="first-prize")
+        if first_prize:
+            first_text = first_prize.get_text(strip=True)
+            # ဂဏန်းတွေကို ထုတ်ယူ
+            import re
+            numbers = re.findall(r'\d+', first_text)
+            if numbers:
+                results["1st"] = numbers[0]
+        
+        # ဒီနေရာမှာ ဂဏန်းအကုန်လုံးကို ရှာဖို့ လိုတယ်
+        # ဝက်ဆိုက်ရဲ့ HTML ပုံစံပေါ်မူတည်ပြီး ရေးရမယ်
+        
+        # လက်ရှိ website ရဲ့ structure ကို inspect လုပ်ဖို့ လိုတယ်
+        # ဒါကြောင့် ခေတ္တ ဗလာပြန်ပေးထားတယ်
+        # မင်း website ရဲ့ HTML structure ကိုကြည့်ပြီး အောက်မှာ ဆက်ရေးရမယ်
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Thai lottery web scraping error: {e}")
+        return {}
+
+
+def fetch_laos_results_from_web() -> dict:
+    """
+    https://laosassociationlottery.com/en/home/ ကနေ လာအိုထီဂဏန်းတွေကို ဖတ်ယူတယ်
+    """
+    url = "https://laosassociationlottery.com/en/home/"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, "html.parser")
+        
+        # ဝက်ဆိုက်ရဲ့ HTML ပုံစံအရ ဂဏန်းတွေကို ရှာတယ်
+        results = {}
+        
+        # ဥပမာ - ၄လုံးပထမဆုကို ရှာတဲ့နည်း
+        first_prize = soup.find("div", class_="lotto-result")
+        if first_prize:
+            first_text = first_prize.get_text(strip=True)
+            import re
+            numbers = re.findall(r'\d+', first_text)
+            if numbers:
+                results["4digit"] = numbers[0]
+        
+        # လာအိုထီမှာ ရက်စွဲလည်း ထည့်ဖို့
+        date_elem = soup.find("div", class_="draw-date")
+        if date_elem:
+            results["date"] = date_elem.get_text(strip=True)
+        else:
+            results["date"] = datetime.now().strftime("%d/%m/%Y")
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Laos lottery web scraping error: {e}")
+        return {}
+
+
+# ──────────────────────────────────────────────
+# /update_lottery - ဝက်ဆိုက်ကနေ ဂဏန်းတွေကို အလိုအလျောက် ယူတဲ့ command
+# ──────────────────────────────────────────────
+async def update_lottery_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ အက်ဒမင် အတွက်သာ")
+        return
+    
+    msg = await update.message.reply_text("⏳ ဝက်ဆိုက်ကနေ ဂဏန်းတွေ ရှာဖွေနေသည်...")
+    
+    # ထိုင်းထီယူ
+    thai_data = fetch_thai_results_from_web()
+    # လာအိုထီယူ
+    laos_data = fetch_laos_results_from_web()
+    
+    result_lines = ["📊 *ဝက်ဆိုက်မှ ရရှိသော ဂဏန်းများ*\n"]
+    
+    if thai_data:
+        global THAI_RESULTS
+        THAI_RESULTS = thai_data
+        result_lines.append("🇹🇭 *ထိုင်းထီ*")
+        for key, value in thai_data.items():
+            if key == "near1st" or key == "3digit_front" or key == "3digit_back":
+                result_lines.append(f"  {key}: {', '.join(value)}")
+            else:
+                result_lines.append(f"  {key}: {value}")
+        result_lines.append("")
+    else:
+        result_lines.append("❌ ထိုင်းထီ ဂဏန်းများ ရယူမရပါ")
+    
+    if laos_data:
+        global LAOS_RESULTS
+        LAOS_RESULTS = laos_data
+        result_lines.append("🇱🇦 *လာအိုထီ*")
+        for key, value in laos_data.items():
+            result_lines.append(f"  {key}: {value}")
+    else:
+        result_lines.append("❌ လာအိုထီ ဂဏန်းများ ရယူမရပါ")
+    
+    await msg.edit_text("\n".join(result_lines), parse_mode="Markdown")
 
 
 # ──────────────────────────────────────────────
@@ -67,14 +195,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
         [InlineKeyboardButton("⚽ ဘောလုံးပွဲများ", callback_data="football_menu")],
         [
-            InlineKeyboardButton("🇹🇭 Thai Lottery", callback_data="check_thai"),
-            InlineKeyboardButton("🇱🇦 Laos Lottery", callback_data="check_laos"),
+            InlineKeyboardButton("🇹🇭 ထိုင်းထီ", callback_data="check_thai"),
+            InlineKeyboardButton("🇱🇦 လာအိုထီ", callback_data="check_laos"),
         ],
-        [InlineKeyboardButton("🔮 Lucky Number", callback_data="lucky")],
-        [InlineKeyboardButton("📅 ပေါက်ဂဏန်း", callback_data="results")],
+        [InlineKeyboardButton("🔮 ကံဂဏန်း", callback_data="lucky")],
+        [InlineKeyboardButton("📅 ထီပေါက်ဂဏန်း", callback_data="results")],
+        [InlineKeyboardButton("🔄 ဝက်ဆိုက်မှ ဂဏန်းယူ", callback_data="update_lottery")],
     ]
     await update.message.reply_text(
-        "🎯 *Lottery & Football Bot မှ ကြိုဆိုပါသည်!*\n\nဘာလုပ်ချင်ပါသလဲ?",
+        "🎯 *ထီနှင့် ဘောလုံးခန့်မှန်း Bot မှ ကြိုဆိုပါသည်!*\n\nဘာလုပ်ချင်ပါသလဲ?",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
@@ -86,25 +215,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "📖 *အသုံးပြုနည်း*\n\n"
-        "⚽ *ဘောလုံး*\n"
-        "/betpredict ManUtd vs Chelsea — လောင်းကြေး ခန့်မှန်း\n"
+        "⚽ *ဘောလုံး ခန့်မှန်းချက်*\n"
+        "/betpredict အသင်း၁ vs အသင်း၂ — ပွဲခန့်မှန်း\n"
+        "ဥပမာ: `/betpredict Arsenal vs Chelsea`\n\n"
         "/matches — ပွဲစာရင်းကြည့်\n"
-        "/predict <id> <home|away|draw> — ကြိုတင် guess\n"
-        "/mypredicts — ကိုယ့် guess များကြည့်\n\n"
-        "🎰 *ထီ ခန့်မှန်း*\n"
-        "/lotterypredict — ထီ ခန့်မှန်းချက်\n"
-        "/lotterystats — ထီ statistics\n\n"
-        "🎰 *Lottery*\n"
-        "/thai <ဂဏန်း> — Thai Lottery စစ်\n"
-        "/laos <ဂဏန်း> — Laos Lottery စစ်\n"
-        "/lucky — Lucky Number\n"
-        "/results — ပေါက်ဂဏန်းများ\n\n"
-        "👑 *Admin Commands*\n"
-        "/addmatch — ပွဲသစ်ထည့်ရန်\n"
-        "/setresult — ရလဒ်ထည့်ရန်\n"
-        "/delmatch — ပွဲဖျက်ရန်\n"
-        "/setthai — Thai ဂဏန်းထည့်\n"
-        "/setlaos — Laos ဂဏန်းထည့်"
+        "/predict ပွဲID home/away/draw — ပွဲကြိုတင်ခန့်မှန်း\n"
+        "ဥပမာ: `/predict 1 home`\n\n"
+        "/mypredicts — ကိုယ့်ခန့်မှန်းချက်များကြည့်\n\n"
+        "🎰 *ထီ ခန့်မှန်းချက်*\n"
+        "/lotterypredict — ထီဂဏန်းခန့်မှန်း\n"
+        "/lotterystats — ထီစာရင်းအင်း\n\n"
+        "🎰 *ထီပေါက်စစ်*\n"
+        "/thai ဂဏန်း — ထိုင်းထီပေါက်စစ်\n"
+        "ဥပမာ: `/thai 123456`\n\n"
+        "/laos ဂဏန်း — လာအိုထီပေါက်စစ်\n"
+        "ဥပမာ: `/laos 1234`\n\n"
+        "/lucky — ကံဂဏန်းထုတ်ပေး\n"
+        "/results — ထီပေါက်ဂဏန်းများကြည့်\n\n"
+        "🔄 *ဝက်ဆိုက်မှ ဂဏန်းယူ*\n"
+        "/update_lottery — ဝက်ဆိုက်မှ ဂဏန်းများကို အလိုအလျောက်ယူ\n\n"
+        "👑 *အက်ဒမင် ညွှန်ကြားချက်များ*\n"
+        "/addmatch — ပွဲအသစ်ထည့်\n"
+        "/setresult — ပွဲရလဒ်ထည့်\n"
+        "/delmatch — ပွဲဖျက်\n"
+        "/setthai — ထိုင်းထီဂဏန်းထည့် (ကိုယ်တိုင်)\n"
+        "/setlaos — လာအိုထီဂဏန်းထည့် (ကိုယ်တိုင်)"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -145,7 +280,6 @@ def format_match(mid: str, m: dict, show_result: bool = True) -> str:
         return "\n".join(p for p in [header, dt, status] if p)
 
 
-# /matches — list all matches
 async def matches_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not FOOTBALL_MATCHES:
         await update.message.reply_text("⚽ ပွဲများ မရှိသေးပါ။")
@@ -171,7 +305,6 @@ async def matches_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-# /result <id> — check single match result
 async def result_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text(
@@ -186,10 +319,9 @@ async def result_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(format_match(mid, m, show_result=True), parse_mode="Markdown")
 
 
-# Admin: /addmatch home=ManUtd away=Chelsea date=18/06/2026 time=21:00
 async def add_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Admin ခွင့်မပြု")
+        await update.message.reply_text("❌ အက်ဒမင် အတွက်သာ")
         return
     if not context.args:
         await update.message.reply_text(
@@ -224,11 +356,9 @@ async def add_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-# Admin: /setresult id=1 result=home score=2-1
-# result values: home | away | draw
 async def set_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Admin ခွင့်မပြု")
+        await update.message.reply_text("❌ အက်ဒမင် အတွက်သာ")
         return
     if not context.args:
         await update.message.reply_text(
@@ -276,7 +406,6 @@ async def set_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     score_line = f"\n⚽ ဂိုး: `{score}`" if score else ""
 
-    # Tally predictions
     preds = PREDICTIONS.get(mid, {})
     winners = [v["name"] for v in preds.values() if v["pick"] == res]
     losers_count = len(preds) - len(winners)
@@ -284,7 +413,7 @@ async def set_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     pred_lines = ""
     if preds:
         pred_lines = (
-            f"\n\n🎯 *Guess ရလဒ်*\n"
+            f"\n\n🎯 *ခန့်မှန်းချက် ရလဒ်*\n"
             f"  ✅ မှန်သူ  : {len(winners)} ယောက်\n"
             f"  ❌ မှားသူ  : {losers_count} ယောက်"
         )
@@ -302,7 +431,6 @@ async def set_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
 
 
-# /predict <id> <home|away|draw>
 async def predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if len(context.args) < 2:
@@ -327,7 +455,7 @@ async def predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if m.get("result"):
-        await update.message.reply_text("❌ ဒီပွဲ ပြီးသွားပြီ။ Guess မလုပ်နိုင်တော့ပါ။")
+        await update.message.reply_text("❌ ဒီပွဲ ပြီးသွားပြီ။ ခန့်မှန်းလို့မရတော့ပါ။")
         return
 
     if mid not in PREDICTIONS:
@@ -344,7 +472,7 @@ async def predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if already:
         old_label = {"home": f"🏠 {m['home']}", "away": f"✈️ {m['away']}", "draw": "🤝 သရေ"}[already["pick"]]
         await update.message.reply_text(
-            f"🔄 *Guess ပြောင်းပြီး*\n\n"
+            f"🔄 *ခန့်မှန်းချက် ပြောင်းပြီး*\n\n"
             f"ပွဲ: *{m['home']} vs {m['away']}*\n"
             f"ဟောင်း: {old_label}\n"
             f"သစ်: {pick_label}",
@@ -353,15 +481,14 @@ async def predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     else:
         total = len(PREDICTIONS[mid])
         await update.message.reply_text(
-            f"✅ *Guess သိမ်းဆည်းပြီး*\n\n"
+            f"✅ *ခန့်မှန်းချက် သိမ်းဆည်းပြီး*\n\n"
             f"ပွဲ: *{m['home']} vs {m['away']}*\n"
             f"မင်းရွေး: {pick_label}\n\n"
-            f"👥 ဒီပွဲ guess လုပ်သူ: {total} ယောက်",
+            f"👥 ဒီပွဲ ခန့်မှန်းသူ: {total} ယောက်",
             parse_mode="Markdown",
         )
 
 
-# /mypredicts — show own predictions
 async def my_predicts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     found = []
@@ -374,17 +501,17 @@ async def my_predicts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             pick_label = {"home": f"🏠 {m['home']}", "away": f"✈️ {m['away']}", "draw": "🤝 သရေ"}[pick]
             result = m.get("result")
             if result:
-                correct = "✅ မှန်" if result == pick else "❌ မှားသည်"
+                correct = "✅ မှန်" if result == pick else "❌ မှား"
                 status = f"{correct}"
             else:
                 status = "⏳ မပြီးသေး"
             found.append(f"[{mid}] *{m['home']} vs {m['away']}*\n  ရွေး: {pick_label} — {status}")
 
     if not found:
-        await update.message.reply_text("မင်း guess မထားသေးပါ။ `/predict <id> <home|away|draw>` နှိပ်ပါ", parse_mode="Markdown")
+        await update.message.reply_text("မင်း ခန့်မှန်းမထားသေးပါ။ `/predict <id> <home|away|draw>` နှိပ်ပါ", parse_mode="Markdown")
         return
 
-    lines = ["🎯 *မင်းရဲ့ Guess များ*\n"] + found
+    lines = ["🎯 *မင်းရဲ့ ခန့်မှန်းချက်များ*\n"] + found
     await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
 
 
@@ -392,7 +519,6 @@ async def my_predicts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 # Prediction commands
 # ──────────────────────────────────────────────
 
-# /betpredict ManUtd vs Chelsea
 async def bet_predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not os.getenv("FOOTBALLDATA_KEY"):
         await update.message.reply_text("⚠️ FOOTBALLDATA_KEY မထည့်သေးပါ။")
@@ -415,25 +541,22 @@ async def bet_predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         pred = await predict_match(home_name, away_name)
     except Exception as e:
-        await msg.edit_text(f"❌ API Error: {e}")
+        await msg.edit_text(f"❌ API အမှား: {e}")
         return
     await msg.edit_text(format_football_prediction(pred), parse_mode="Markdown")
 
 
-# /lotterypredict
 async def lottery_predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(predict_lottery(), parse_mode="Markdown")
 
 
-# /lotterystats
 async def lottery_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(lottery_stats(), parse_mode="Markdown")
 
 
-# Admin: /addhistory thai_2digit=56,78,12 laos_4digit=1234,5678
 async def add_history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Admin ခွင့်မပြု")
+        await update.message.reply_text("❌ အက်ဒမင် အတွက်သာ")
         return
     if not context.args:
         await update.message.reply_text(
@@ -459,10 +582,9 @@ async def add_history_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ ဘာမှ ထည့်မရပါ")
 
 
-# Admin: /delmatch <id>
 async def del_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Admin ခွင့်မပြု")
+        await update.message.reply_text("❌ အက်ဒမင် အတွက်သာ")
         return
     if not context.args:
         await update.message.reply_text("ဥပမာ: `/delmatch 1`", parse_mode="Markdown")
@@ -478,12 +600,12 @@ async def del_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ══════════════════════════════════════════════
-# LOTTERY SECTION (unchanged)
+# LOTTERY SECTION
 # ══════════════════════════════════════════════
 
 def check_thai_number(number: str) -> str:
     if not THAI_RESULTS:
-        return "⚠️ Thai Lottery ဂဏန်းများ မရှိသေးပါ။ Admin မှ ထည့်ပေးရန် လိုအပ်ပါသည်။"
+        return "⚠️ ထိုင်းထီ ဂဏန်းများ မရှိသေးပါ။ `/update_lottery` နှိပ်ပြီး ဝက်ဆိုက်မှ ယူပါ သို့မဟုတ် အက်ဒမင် ထည့်ပေးရန် လိုအပ်ပါသည်။"
     number = number.strip()
     wins = []
     r = THAI_RESULTS
@@ -519,7 +641,7 @@ async def thai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 def check_laos_number(number: str) -> str:
     if not LAOS_RESULTS:
-        return "⚠️ Laos Lottery ဂဏန်းများ မရှိသေးပါ။ Admin မှ ထည့်ပေးရန် လိုအပ်ပါသည်။"
+        return "⚠️ လာအိုထီ ဂဏန်းများ မရှိသေးပါ။ `/update_lottery` နှိပ်ပြီး ဝက်ဆိုက်မှ ယူပါ သို့မဟုတ် အက်ဒမင် ထည့်ပေးရန် လိုအပ်ပါသည်။"
     number = number.strip()
     r = LAOS_RESULTS
     winning = r.get("4digit", "")
@@ -536,8 +658,8 @@ def check_laos_number(number: str) -> str:
         wins.append("✅ ၁လုံးနောက် ပေါက်သည်!")
 
     if wins:
-        return f"🎉 *ဂဏန်း {number}* (Laos {date})\n\n" + "\n".join(wins)
-    return f"❌ *ဂဏန်း {number}* — ဆုမပေါက်ပါ (Laos {date})။"
+        return f"🎉 *ဂဏန်း {number}* (လာအိုထီ {date})\n\n" + "\n".join(wins)
+    return f"❌ *ဂဏန်း {number}* — ဆုမပေါက်ပါ (လာအိုထီ {date})။"
 
 
 async def laos_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -549,11 +671,11 @@ async def laos_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 def generate_lucky() -> str:
     lines = [
-        "🔮 *Lucky Numbers ထုတ်ပေးသည်*\n",
-        f"🇹🇭 Thai 6-digit : `{random.randint(100000, 999999)}`",
-        f"🇹🇭 Thai 2-digit : `{random.randint(10, 99)}`",
-        f"🇹🇭 Thai 3-digit : `{random.randint(100, 999)}`",
-        f"🇱🇦 Laos 4-digit : `{random.randint(1000, 9999)}`",
+        "🔮 *ကံဂဏန်းများ*\n",
+        f"🇹🇭 ထိုင်းထီ ၆လုံး : `{random.randint(100000, 999999)}`",
+        f"🇹🇭 ထိုင်းထီ ၂လုံး : `{random.randint(10, 99)}`",
+        f"🇹🇭 ထိုင်းထီ ၃လုံး : `{random.randint(100, 999)}`",
+        f"🇱🇦 လာအိုထီ ၄လုံး : `{random.randint(1000, 9999)}`",
         "",
         "_ဂဏန်းများသည် ကံကြမ္မာတင် ဆုံးဖြတ်သော အတွက် တာဝန်မယူနိုင်ပါ။_",
     ]
@@ -565,35 +687,35 @@ async def lucky_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def results_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    lines = ["📅 *နောက်ဆုံး ပေါက်ဂဏန်းများ*\n"]
+    lines = ["📅 *နောက်ဆုံး ထီပေါက်ဂဏန်းများ*\n"]
     if THAI_RESULTS:
         r = THAI_RESULTS
         lines += [
-            "🇹🇭 *Thai Lottery*",
+            "🇹🇭 *ထိုင်းထီ*",
             f"  ပထမဆု (1st)      : `{r.get('1st', '-')}`",
-            f"  နီးပါး (Near 1st): `{', '.join(r.get('near1st', []))}`",
+            f"  နီးပါး (Near 1st) : `{', '.join(r.get('near1st', []))}`",
             f"  ၃လုံးရှေ့         : `{', '.join(r.get('3digit_front', []))}`",
             f"  ၃လုံးနောက်        : `{', '.join(r.get('3digit_back', []))}`",
             f"  ၂လုံးနောက်        : `{r.get('2digit', '-')}`",
         ]
     else:
-        lines.append("🇹🇭 Thai Lottery — မရှိသေးပါ")
+        lines.append("🇹🇭 ထိုင်းထီ — မရှိသေးပါ။ `/update_lottery` နှိပ်ပါ")
     lines.append("")
     if LAOS_RESULTS:
         r = LAOS_RESULTS
         lines += [
-            "🇱🇦 *Laos Lottery*",
+            "🇱🇦 *လာအိုထီ*",
             f"  ရက်စွဲ   : {r.get('date', '-')}",
             f"  ၄လုံး    : `{r.get('4digit', '-')}`",
         ]
     else:
-        lines.append("🇱🇦 Laos Lottery — မရှိသေးပါ")
+        lines.append("🇱🇦 လာအိုထီ — မရှိသေးပါ။ `/update_lottery` နှိပ်ပါ")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def set_thai(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Admin ခွင့်မပြု")
+        await update.message.reply_text("❌ အက်ဒမင် အတွက်သာ")
         return
     if not context.args:
         await update.message.reply_text(
@@ -615,12 +737,12 @@ async def set_thai(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             elif k in ("1st", "2digit"):
                 data[k] = v
     THAI_RESULTS = data
-    await update.message.reply_text("✅ Thai Lottery ဂဏန်းများ သိမ်းဆည်းပြီး")
+    await update.message.reply_text("✅ ထိုင်းထီ ဂဏန်းများ သိမ်းဆည်းပြီး")
 
 
 async def set_laos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Admin ခွင့်မပြု")
+        await update.message.reply_text("❌ အက်ဒမင် အတွက်သာ")
         return
     if not context.args:
         await update.message.reply_text(
@@ -634,7 +756,7 @@ async def set_laos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             k, v = arg.split("=", 1)
             data[k] = v
     LAOS_RESULTS = data
-    await update.message.reply_text("✅ Laos Lottery ဂဏန်းများ သိမ်းဆည်းပြီး")
+    await update.message.reply_text("✅ လာအိုထီ ဂဏန်းများ သိမ်းဆည်းပြီး")
 
 
 # ──────────────────────────────────────────────
@@ -647,9 +769,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if query.data == "football_menu":
         keyboard = [
             [InlineKeyboardButton("📋 ပွဲစာရင်းကြည့်", callback_data="fb_list")],
-            [InlineKeyboardButton("🎯 ကြိုတင် Guess လုပ်ရန်", callback_data="fb_predict")],
-            [InlineKeyboardButton("🔍 ပွဲရလဒ်စစ်ရန်", callback_data="fb_check")],
-            [InlineKeyboardButton("📊 ကိုယ့် Guess ကြည့်", callback_data="fb_mypredicts")],
+            [InlineKeyboardButton("🎯 ပွဲခန့်မှန်းရန်", callback_data="fb_predict")],
+            [InlineKeyboardButton("🔍 ပွဲရလဒ်စစ်", callback_data="fb_check")],
+            [InlineKeyboardButton("📊 ကိုယ့်ခန့်မှန်းချက်", callback_data="fb_mypredicts")],
             [InlineKeyboardButton("🔙 နောက်သို့", callback_data="back_main")],
         ]
         await query.message.reply_text(
@@ -667,7 +789,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             pcount = len(PREDICTIONS.get(mid, {}))
             lines.append(format_match(mid, m, show_result=True))
             if not m.get("result"):
-                lines.append(f"  👥 Guess လုပ်သူ: {pcount} ယောက်")
+                lines.append(f"  👥 ခန့်မှန်းသူ: {pcount} ယောက်")
             lines.append("")
         await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -678,10 +800,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     elif query.data == "fb_predict":
         await query.message.reply_text(
-            "🎯 *ကြိုတင် Guess လုပ်ရန်*\n\n"
+            "🎯 *ပွဲခန့်မှန်းရန်*\n\n"
             "ဥပမာ:\n"
-            "`/predict 1 home` — ပထမအသင်းနိုင်မယ်\n"
-            "`/predict 1 away` — ဒုတိယအသင်းနိုင်မယ်\n"
+            "`/predict 1 home` — အိမ်ကွင်းအသင်းနိုင်မယ်\n"
+            "`/predict 1 away` — အဝေးကွင်းအသင်းနိုင်မယ်\n"
             "`/predict 1 draw` — သရေဖြစ်မယ်\n\n"
             "ပွဲစာရင်း ကြည့်ရန် /matches",
             parse_mode="Markdown",
@@ -699,25 +821,30 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 pick_label = {"home": f"🏠 {m['home']}", "away": f"✈️ {m['away']}", "draw": "🤝 သရေ"}[pick]
                 result = m.get("result")
                 if result:
-                    status = "✅ မှန်" if result == pick else "❌ မှားသည်"
+                    status = "✅ မှန်" if result == pick else "❌ မှား"
                 else:
                     status = "⏳ မပြီးသေး"
                 found.append(f"[{mid}] *{m['home']} vs {m['away']}*\n  ရွေး: {pick_label} — {status}")
         if not found:
-            await query.message.reply_text("မင်း guess မထားသေးပါ။ `/predict <id> <home|away|draw>` နှိပ်ပါ", parse_mode="Markdown")
+            await query.message.reply_text("မင်း ခန့်မှန်းမထားသေးပါ။ `/predict <id> <home|away|draw>` နှိပ်ပါ", parse_mode="Markdown")
         else:
-            lines = ["📊 *မင်းရဲ့ Guess များ*\n"] + found
+            lines = ["📊 *မင်းရဲ့ ခန့်မှန်းချက်များ*\n"] + found
             await query.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+
+    elif query.data == "update_lottery":
+        # ဒီကိုနှိပ်ရင် /update_lottery command ကို ခေါ်မယ်
+        await update_lottery_command(update, context)
 
     elif query.data == "back_main":
         keyboard = [
             [InlineKeyboardButton("⚽ ဘောလုံးပွဲများ", callback_data="football_menu")],
             [
-                InlineKeyboardButton("🇹🇭 Thai Lottery", callback_data="check_thai"),
-                InlineKeyboardButton("🇱🇦 Laos Lottery", callback_data="check_laos"),
+                InlineKeyboardButton("🇹🇭 ထိုင်းထီ", callback_data="check_thai"),
+                InlineKeyboardButton("🇱🇦 လာအိုထီ", callback_data="check_laos"),
             ],
-            [InlineKeyboardButton("🔮 Lucky Number", callback_data="lucky")],
-            [InlineKeyboardButton("📅 ပေါက်ဂဏန်း", callback_data="results")],
+            [InlineKeyboardButton("🔮 ကံဂဏန်း", callback_data="lucky")],
+            [InlineKeyboardButton("📅 ထီပေါက်ဂဏန်း", callback_data="results")],
+            [InlineKeyboardButton("🔄 ဝက်ဆိုက်မှ ဂဏန်းယူ", callback_data="update_lottery")],
         ]
         await query.message.reply_text(
             "🎯 *ပင်မမီနူး*",
@@ -736,30 +863,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif query.data == "lucky":
         await query.message.reply_text(generate_lucky(), parse_mode="Markdown")
     elif query.data == "results":
-        lines = ["📅 *နောက်ဆုံး ပေါက်ဂဏန်းများ*\n"]
-        if THAI_RESULTS:
-            r = THAI_RESULTS
-            lines += [
-                "🇹🇭 *Thai Lottery*",
-                f"  ပထမဆု (1st)      : `{r.get('1st', '-')}`",
-                f"  နီးပါး (Near 1st): `{', '.join(r.get('near1st', []))}`",
-                f"  ၃လုံးရှေ့         : `{', '.join(r.get('3digit_front', []))}`",
-                f"  ၃လုံးနောက်        : `{', '.join(r.get('3digit_back', []))}`",
-                f"  ၂လုံးနောက်        : `{r.get('2digit', '-')}`",
-            ]
-        else:
-            lines.append("🇹🇭 Thai Lottery — မရှိသေးပါ")
-        lines.append("")
-        if LAOS_RESULTS:
-            r = LAOS_RESULTS
-            lines += [
-                "🇱🇦 *Laos Lottery*",
-                f"  ရက်စွဲ   : {r.get('date', '-')}",
-                f"  ၄လုံး    : `{r.get('4digit', '-')}`",
-            ]
-        else:
-            lines.append("🇱🇦 Laos Lottery — မရှိသေးပါ")
-        await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await results_command(update, context)
 
 
 # ──────────────────────────────────────────────
@@ -775,7 +879,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elif len(text) in (2, 3):
             await update.message.reply_text(check_thai_number(text), parse_mode="Markdown")
         else:
-            await update.message.reply_text("2, 3, 4 သို့မဟုတ် 6 လုံး ဂဏန်း ထည့်ပါ။")
+            await update.message.reply_text("၂၊ ၃၊ ၄ သို့မဟုတ် ၆ လုံး ဂဏန်း ထည့်ပါ။")
     else:
         await update.message.reply_text(
             "ဂဏန်းတစ်ခု ထည့်ပါ သို့မဟုတ် /start နှိပ်ပါ။"
@@ -785,7 +889,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # ──────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────
-async def main() -> None:
+def main() -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN environment variable မထည့်သေးပါ!")
@@ -801,6 +905,7 @@ async def main() -> None:
     app.add_handler(CommandHandler("results", results_command))
     app.add_handler(CommandHandler("setthai", set_thai))
     app.add_handler(CommandHandler("setlaos", set_laos))
+    app.add_handler(CommandHandler("update_lottery", update_lottery_command))
 
     # Football (manual)
     app.add_handler(CommandHandler("matches", matches_command))
@@ -821,8 +926,8 @@ async def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot စတင်နေသည်...")
-    await app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
