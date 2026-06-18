@@ -3,6 +3,7 @@ import sys
 import random
 import logging
 import asyncio
+import nest_asyncio
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
@@ -23,6 +24,9 @@ from prediction import (
     add_history,
     LOTTERY_HISTORY,
 )
+
+# ---------- nest_asyncio apply ----------
+nest_asyncio.apply()
 
 # ---------- Logging ----------
 logging.basicConfig(
@@ -61,7 +65,7 @@ def fetch_thai_results_from_web() -> dict:
         # ဝက်ဆိုက်ရဲ့ HTML structure ကို ကြည့်ပြီး ဂဏန်းတွေကို ရှာတယ်
         results = {}
         
-        # ပထမဆုကို ရှာတယ် (ဥပမာ - class name က ပြောင်းနိုင်တယ်)
+        # ပထမဆုကို ရှာတယ်
         first_prize = soup.find("div", class_="first-prize")
         if first_prize:
             text = first_prize.get_text(strip=True)
@@ -904,7 +908,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # ============================================================
 # MAIN
 # ============================================================
-async def main() -> None:
+def main() -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN environment variable မထည့်သေးပါ!")
@@ -941,19 +945,11 @@ async def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot စတင်နေသည်...")
-    await app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 # ============================================================
-# ENTRY POINT - PYTHON 3.14 အတွက် ပြင်ဆင်ပြီး
+# ENTRY POINT
 # ============================================================
 if __name__ == "__main__":
-    # Python 3.14 အတွက် event loop ကို သေချာဖန်တီးတယ်
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    # asyncio.run() နဲ့ main() ကို run တယ်
-    asyncio.run(main())
+    main()
