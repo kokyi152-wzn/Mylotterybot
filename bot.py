@@ -1,6 +1,8 @@
 import os
+import sys
 import random
 import logging
+import asyncio
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
@@ -22,29 +24,24 @@ from prediction import (
     LOTTERY_HISTORY,
 )
 
+# ---------- Logging ----------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# Data stores (in-memory)
-# ============================================================
+# ---------- Data stores ----------
 THAI_RESULTS: dict = {}
 LAOS_RESULTS: dict = {}
-
-# Predictions store
 PREDICTIONS: dict = {}
-
-# Football matches store
 FOOTBALL_MATCHES: dict = {}
 _match_counter = 0
 
 
-# ──────────────────────────────────────────────
-# Web Scraping Functions
-# ──────────────────────────────────────────────
+# ============================================================
+# WEB SCRAPING FUNCTIONS
+# ============================================================
 
 def fetch_thai_results_from_web() -> dict:
     """
@@ -61,27 +58,52 @@ def fetch_thai_results_from_web() -> dict:
         
         soup = BeautifulSoup(response.content, "html.parser")
         
-        # ဒီနေရာမှာ ဝက်ဆိုက်ရဲ့ HTML ပုံစံအရ ဂဏန်းတွေကို ရှာတယ်
-        # ဝက်ဆိုက်က ပုံစံပြောင်းသွားရင် ဒီနေရာကို ပြင်ရမယ်
-        
+        # ဝက်ဆိုက်ရဲ့ HTML structure ကို ကြည့်ပြီး ဂဏန်းတွေကို ရှာတယ်
         results = {}
         
-        # ဥပမာ - ပထမဆုကို ရှာတဲ့နည်း
+        # ပထမဆုကို ရှာတယ် (ဥပမာ - class name က ပြောင်းနိုင်တယ်)
         first_prize = soup.find("div", class_="first-prize")
         if first_prize:
-            first_text = first_prize.get_text(strip=True)
-            # ဂဏန်းတွေကို ထုတ်ယူ
+            text = first_prize.get_text(strip=True)
             import re
-            numbers = re.findall(r'\d+', first_text)
+            numbers = re.findall(r'\d+', text)
             if numbers:
                 results["1st"] = numbers[0]
         
-        # ဒီနေရာမှာ ဂဏန်းအကုန်လုံးကို ရှာဖို့ လိုတယ်
-        # ဝက်ဆိုက်ရဲ့ HTML ပုံစံပေါ်မူတည်ပြီး ရေးရမယ်
+        # ၂လုံးနောက်
+        two_digit = soup.find("div", class_="two-digit")
+        if two_digit:
+            text = two_digit.get_text(strip=True)
+            import re
+            numbers = re.findall(r'\d+', text)
+            if numbers:
+                results["2digit"] = numbers[0]
         
-        # လက်ရှိ website ရဲ့ structure ကို inspect လုပ်ဖို့ လိုတယ်
-        # ဒါကြောင့် ခေတ္တ ဗလာပြန်ပေးထားတယ်
-        # မင်း website ရဲ့ HTML structure ကိုကြည့်ပြီး အောက်မှာ ဆက်ရေးရမယ်
+        # ၃လုံးရှေ့နဲ့ နောက်
+        three_digit_front = soup.find("div", class_="three-digit-front")
+        if three_digit_front:
+            text = three_digit_front.get_text(strip=True)
+            import re
+            numbers = re.findall(r'\d+', text)
+            if numbers:
+                results["3digit_front"] = numbers
+        
+        three_digit_back = soup.find("div", class_="three-digit-back")
+        if three_digit_back:
+            text = three_digit_back.get_text(strip=True)
+            import re
+            numbers = re.findall(r'\d+', text)
+            if numbers:
+                results["3digit_back"] = numbers
+        
+        # နီးပါးဆု
+        near_1st = soup.find("div", class_="near-first")
+        if near_1st:
+            text = near_1st.get_text(strip=True)
+            import re
+            numbers = re.findall(r'\d+', text)
+            if numbers:
+                results["near1st"] = numbers
         
         return results
         
@@ -105,19 +127,18 @@ def fetch_laos_results_from_web() -> dict:
         
         soup = BeautifulSoup(response.content, "html.parser")
         
-        # ဝက်ဆိုက်ရဲ့ HTML ပုံစံအရ ဂဏန်းတွေကို ရှာတယ်
         results = {}
         
-        # ဥပမာ - ၄လုံးပထမဆုကို ရှာတဲ့နည်း
+        # ၄လုံးပထမဆု
         first_prize = soup.find("div", class_="lotto-result")
         if first_prize:
-            first_text = first_prize.get_text(strip=True)
+            text = first_prize.get_text(strip=True)
             import re
-            numbers = re.findall(r'\d+', first_text)
+            numbers = re.findall(r'\d+', text)
             if numbers:
                 results["4digit"] = numbers[0]
         
-        # လာအိုထီမှာ ရက်စွဲလည်း ထည့်ဖို့
+        # ရက်စွဲ
         date_elem = soup.find("div", class_="draw-date")
         if date_elem:
             results["date"] = date_elem.get_text(strip=True)
@@ -131,9 +152,9 @@ def fetch_laos_results_from_web() -> dict:
         return {}
 
 
-# ──────────────────────────────────────────────
-# /update_lottery - ဝက်ဆိုက်ကနေ ဂဏန်းတွေကို အလိုအလျောက် ယူတဲ့ command
-# ──────────────────────────────────────────────
+# ============================================================
+# COMMAND: /update_lottery
+# ============================================================
 async def update_lottery_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ အက်ဒမင် အတွက်သာ")
@@ -141,9 +162,7 @@ async def update_lottery_command(update: Update, context: ContextTypes.DEFAULT_T
     
     msg = await update.message.reply_text("⏳ ဝက်ဆိုက်ကနေ ဂဏန်းတွေ ရှာဖွေနေသည်...")
     
-    # ထိုင်းထီယူ
     thai_data = fetch_thai_results_from_web()
-    # လာအိုထီယူ
     laos_data = fetch_laos_results_from_web()
     
     result_lines = ["📊 *ဝက်ဆိုက်မှ ရရှိသော ဂဏန်းများ*\n"]
@@ -153,7 +172,7 @@ async def update_lottery_command(update: Update, context: ContextTypes.DEFAULT_T
         THAI_RESULTS = thai_data
         result_lines.append("🇹🇭 *ထိုင်းထီ*")
         for key, value in thai_data.items():
-            if key == "near1st" or key == "3digit_front" or key == "3digit_back":
+            if isinstance(value, list):
                 result_lines.append(f"  {key}: {', '.join(value)}")
             else:
                 result_lines.append(f"  {key}: {value}")
@@ -173,9 +192,9 @@ async def update_lottery_command(update: Update, context: ContextTypes.DEFAULT_T
     await msg.edit_text("\n".join(result_lines), parse_mode="Markdown")
 
 
-# ──────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────
+# ============================================================
+# HELPERS
+# ============================================================
 def is_admin(user_id: int) -> bool:
     admin_ids_raw = os.getenv("ADMIN_IDS", "")
     admin_ids = [int(x) for x in admin_ids_raw.split(",") if x.strip().isdigit()]
@@ -188,9 +207,9 @@ def next_match_id() -> str:
     return str(_match_counter)
 
 
-# ──────────────────────────────────────────────
+# ============================================================
 # /start
-# ──────────────────────────────────────────────
+# ============================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
         [InlineKeyboardButton("⚽ ဘောလုံးပွဲများ", callback_data="football_menu")],
@@ -209,9 +228,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-# ──────────────────────────────────────────────
+# ============================================================
 # /help
-# ──────────────────────────────────────────────
+# ============================================================
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "📖 *အသုံးပြုနည်း*\n\n"
@@ -244,10 +263,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
-# ══════════════════════════════════════════════
+# ============================================================
 # FOOTBALL SECTION
-# ══════════════════════════════════════════════
-
+# ============================================================
 def result_emoji(result: str | None) -> str:
     return {"home": "🏆", "away": "🏆", "draw": "🤝", None: "⏳"}.get(result, "❓")
 
@@ -515,10 +533,9 @@ async def my_predicts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
 
 
-# ──────────────────────────────────────────────
-# Prediction commands
-# ──────────────────────────────────────────────
-
+# ============================================================
+# PREDICTION COMMANDS
+# ============================================================
 async def bet_predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not os.getenv("FOOTBALLDATA_KEY"):
         await update.message.reply_text("⚠️ FOOTBALLDATA_KEY မထည့်သေးပါ။")
@@ -599,10 +616,9 @@ async def del_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"❌ ပွဲ ID `{mid}` မတွေ့ပါ။", parse_mode="Markdown")
 
 
-# ══════════════════════════════════════════════
+# ============================================================
 # LOTTERY SECTION
-# ══════════════════════════════════════════════
-
+# ============================================================
 def check_thai_number(number: str) -> str:
     if not THAI_RESULTS:
         return "⚠️ ထိုင်းထီ ဂဏန်းများ မရှိသေးပါ။ `/update_lottery` နှိပ်ပြီး ဝက်ဆိုက်မှ ယူပါ သို့မဟုတ် အက်ဒမင် ထည့်ပေးရန် လိုအပ်ပါသည်။"
@@ -759,9 +775,9 @@ async def set_laos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("✅ လာအိုထီ ဂဏန်းများ သိမ်းဆည်းပြီး")
 
 
-# ──────────────────────────────────────────────
-# Inline keyboard callbacks
-# ──────────────────────────────────────────────
+# ============================================================
+# INLINE CALLBACKS
+# ============================================================
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -832,7 +848,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
 
     elif query.data == "update_lottery":
-        # ဒီကိုနှိပ်ရင် /update_lottery command ကို ခေါ်မယ်
         await update_lottery_command(update, context)
 
     elif query.data == "back_main":
@@ -866,9 +881,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await results_command(update, context)
 
 
-# ──────────────────────────────────────────────
-# Plain message handler
-# ──────────────────────────────────────────────
+# ============================================================
+# MESSAGE HANDLER
+# ============================================================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text.strip()
     if text.isdigit():
@@ -886,10 +901,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
 
-# ──────────────────────────────────────────────
-# Main
-# ──────────────────────────────────────────────
-def main() -> None:
+# ============================================================
+# MAIN
+# ============================================================
+async def main() -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN environment variable မထည့်သေးပါ!")
@@ -907,7 +922,7 @@ def main() -> None:
     app.add_handler(CommandHandler("setlaos", set_laos))
     app.add_handler(CommandHandler("update_lottery", update_lottery_command))
 
-    # Football (manual)
+    # Football
     app.add_handler(CommandHandler("matches", matches_command))
     app.add_handler(CommandHandler("result", result_command))
     app.add_handler(CommandHandler("predict", predict_command))
@@ -926,8 +941,19 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot စတင်နေသည်...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    await app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
+# ============================================================
+# ENTRY POINT - PYTHON 3.14 အတွက် ပြင်ဆင်ပြီး
+# ============================================================
 if __name__ == "__main__":
-    main()
+    # Python 3.14 အတွက် event loop ကို သေချာဖန်တီးတယ်
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    # asyncio.run() နဲ့ main() ကို run တယ်
+    asyncio.run(main())
