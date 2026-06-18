@@ -2,6 +2,7 @@ import os
 import sys
 import random
 import logging
+import asyncio
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
@@ -22,6 +23,13 @@ from prediction import (
     add_history,
     LOTTERY_HISTORY,
 )
+
+# ---------- nest_asyncio ကို ထည့်သုံးတယ် ----------
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    pass
 
 # ---------- Logging ----------
 logging.basicConfig(
@@ -57,50 +65,20 @@ def fetch_thai_results_from_web() -> dict:
         # ပထမဆု
         first_prize = soup.find("div", class_="first-prize")
         if first_prize:
-            text = first_prize.get_text(strip=True)
             import re
-            numbers = re.findall(r'\d+', text)
+            numbers = re.findall(r'\d+', first_prize.get_text(strip=True))
             if numbers:
                 results["1st"] = numbers[0]
         
         # ၂လုံးနောက်
         two_digit = soup.find("div", class_="two-digit")
         if two_digit:
-            text = two_digit.get_text(strip=True)
             import re
-            numbers = re.findall(r'\d+', text)
+            numbers = re.findall(r'\d+', two_digit.get_text(strip=True))
             if numbers:
                 results["2digit"] = numbers[0]
         
-        # ၃လုံးရှေ့
-        three_front = soup.find("div", class_="three-digit-front")
-        if three_front:
-            text = three_front.get_text(strip=True)
-            import re
-            numbers = re.findall(r'\d+', text)
-            if numbers:
-                results["3digit_front"] = numbers
-        
-        # ၃လုံးနောက်
-        three_back = soup.find("div", class_="three-digit-back")
-        if three_back:
-            text = three_back.get_text(strip=True)
-            import re
-            numbers = re.findall(r'\d+', text)
-            if numbers:
-                results["3digit_back"] = numbers
-        
-        # နီးပါးဆု
-        near_1st = soup.find("div", class_="near-first")
-        if near_1st:
-            text = near_1st.get_text(strip=True)
-            import re
-            numbers = re.findall(r'\d+', text)
-            if numbers:
-                results["near1st"] = numbers
-        
         return results
-        
     except Exception as e:
         logger.error(f"Thai lottery web scraping error: {e}")
         return {}
@@ -121,21 +99,13 @@ def fetch_laos_results_from_web() -> dict:
         # ၄လုံးပထမဆု
         first_prize = soup.find("div", class_="lotto-result")
         if first_prize:
-            text = first_prize.get_text(strip=True)
             import re
-            numbers = re.findall(r'\d+', text)
+            numbers = re.findall(r'\d+', first_prize.get_text(strip=True))
             if numbers:
                 results["4digit"] = numbers[0]
         
-        # ရက်စွဲ
-        date_elem = soup.find("div", class_="draw-date")
-        if date_elem:
-            results["date"] = date_elem.get_text(strip=True)
-        else:
-            results["date"] = datetime.now().strftime("%d/%m/%Y")
-        
+        results["date"] = datetime.now().strftime("%d/%m/%Y")
         return results
-        
     except Exception as e:
         logger.error(f"Laos lottery web scraping error: {e}")
         return {}
@@ -228,16 +198,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "ဥပမာ: `/betpredict Arsenal vs Chelsea`\n\n"
         "/matches — ပွဲစာရင်းကြည့်\n"
         "/predict ပွဲID home/away/draw — ပွဲကြိုတင်ခန့်မှန်း\n"
-        "ဥပမာ: `/predict 1 home`\n\n"
         "/mypredicts — ကိုယ့်ခန့်မှန်းချက်များကြည့်\n\n"
         "🎰 *ထီ ခန့်မှန်းချက်*\n"
         "/lotterypredict — ထီဂဏန်းခန့်မှန်း\n"
         "/lotterystats — ထီစာရင်းအင်း\n\n"
         "🎰 *ထီပေါက်စစ်*\n"
         "/thai ဂဏန်း — ထိုင်းထီပေါက်စစ်\n"
-        "ဥပမာ: `/thai 123456`\n\n"
         "/laos ဂဏန်း — လာအိုထီပေါက်စစ်\n"
-        "ဥပမာ: `/laos 1234`\n\n"
         "/lucky — ကံဂဏန်းထုတ်ပေး\n"
         "/results — ထီပေါက်ဂဏန်းများကြည့်\n\n"
         "🔄 *ဝက်ဆိုက်မှ ဂဏန်းယူ*\n"
@@ -314,9 +281,7 @@ async def matches_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def result_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
-        await update.message.reply_text(
-            "ပွဲ ID ထည့်ပါ။ ဥပမာ: `/result 1`", parse_mode="Markdown"
-        )
+        await update.message.reply_text("ပွဲ ID ထည့်ပါ။ ဥပမာ: `/result 1`", parse_mode="Markdown")
         return
     mid = context.args[0]
     m = FOOTBALL_MATCHES.get(mid)
@@ -451,9 +416,7 @@ async def predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     pick = context.args[1].lower()
 
     if pick not in ("home", "away", "draw"):
-        await update.message.reply_text(
-            "❌ `home` | `away` | `draw` တစ်ခုသာ ရွေးပါ", parse_mode="Markdown"
-        )
+        await update.message.reply_text("❌ `home` | `away` | `draw` တစ်ခုသာ ရွေးပါ", parse_mode="Markdown")
         return
 
     m = FOOTBALL_MATCHES.get(mid)
@@ -531,17 +494,13 @@ async def bet_predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     text = " ".join(context.args)
     if "vs" not in text.lower():
-        await update.message.reply_text(
-            "ဥပမာ: `/betpredict ManUtd vs Chelsea`", parse_mode="Markdown"
-        )
+        await update.message.reply_text("ဥပမာ: `/betpredict ManUtd vs Chelsea`", parse_mode="Markdown")
         return
     parts = text.lower().split("vs", 1)
     home_name = parts[0].strip()
     away_name = parts[1].strip()
     if not home_name or not away_name:
-        await update.message.reply_text(
-            "ဥပမာ: `/betpredict ManUtd vs Chelsea`", parse_mode="Markdown"
-        )
+        await update.message.reply_text("ဥပမာ: `/betpredict ManUtd vs Chelsea`", parse_mode="Markdown")
         return
     msg = await update.message.reply_text("⏳ ခန့်မှန်းနေသည်...")
     try:
@@ -598,9 +557,7 @@ async def del_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     mid = context.args[0]
     if mid in FOOTBALL_MATCHES:
         m = FOOTBALL_MATCHES.pop(mid)
-        await update.message.reply_text(
-            f"🗑 ပွဲ [{mid}] {m['home']} vs {m['away']} ဖျက်ပြီး"
-        )
+        await update.message.reply_text(f"🗑 ပွဲ [{mid}] {m['home']} vs {m['away']} ဖျက်ပြီး")
     else:
         await update.message.reply_text(f"❌ ပွဲ ID `{mid}` မတွေ့ပါ။", parse_mode="Markdown")
 
@@ -750,9 +707,7 @@ async def set_laos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("❌ အက်ဒမင် အတွက်သာ")
         return
     if not context.args:
-        await update.message.reply_text(
-            "`/setlaos 4digit=1234 date=17/06/2026`", parse_mode="Markdown"
-        )
+        await update.message.reply_text("`/setlaos 4digit=1234 date=17/06/2026`", parse_mode="Markdown")
         return
     global LAOS_RESULTS
     data: dict = {}
@@ -799,9 +754,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     elif query.data == "fb_check":
-        await query.message.reply_text(
-            "ပွဲ ID ထည့်ပါ။ ဥပမာ: `/result 1`", parse_mode="Markdown"
-        )
+        await query.message.reply_text("ပွဲ ID ထည့်ပါ။ ဥပမာ: `/result 1`", parse_mode="Markdown")
 
     elif query.data == "fb_predict":
         await query.message.reply_text(
@@ -857,13 +810,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
 
     elif query.data == "check_thai":
-        await query.message.reply_text(
-            "🇹🇭 ဂဏန်းထည့်ပါ:\n`/thai 123456`", parse_mode="Markdown"
-        )
+        await query.message.reply_text("🇹🇭 ဂဏန်းထည့်ပါ:\n`/thai 123456`", parse_mode="Markdown")
     elif query.data == "check_laos":
-        await query.message.reply_text(
-            "🇱🇦 ဂဏန်းထည့်ပါ:\n`/laos 1234`", parse_mode="Markdown"
-        )
+        await query.message.reply_text("🇱🇦 ဂဏန်းထည့်ပါ:\n`/laos 1234`", parse_mode="Markdown")
     elif query.data == "lucky":
         await query.message.reply_text(generate_lucky(), parse_mode="Markdown")
     elif query.data == "results":
@@ -885,15 +834,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             await update.message.reply_text("၂၊ ၃၊ ၄ သို့မဟုတ် ၆ လုံး ဂဏန်း ထည့်ပါ။")
     else:
-        await update.message.reply_text(
-            "ဂဏန်းတစ်ခု ထည့်ပါ သို့မဟုတ် /start နှိပ်ပါ။"
-        )
+        await update.message.reply_text("ဂဏန်းတစ်ခု ထည့်ပါ သို့မဟုတ် /start နှိပ်ပါ။")
 
 
 # ============================================================
-# MAIN (Synchronous version for Render Background Worker)
+# MAIN
 # ============================================================
-def main() -> None:
+async def main() -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN environment variable မထည့်သေးပါ!")
@@ -930,8 +877,25 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot စတင်နေသည်...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    await app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
+# ============================================================
+# ENTRY POINT
+# ============================================================
 if __name__ == "__main__":
-    main()
+    # Python 3.14 အတွက် event loop ကို သေချာဖန်တီးတယ်
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    # nest_asyncio ကို apply လုပ်တယ်
+    try:
+        import nest_asyncio
+        nest_asyncio.apply(loop)
+    except ImportError:
+        pass
+    
+    asyncio.run(main())
