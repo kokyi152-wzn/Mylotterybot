@@ -2,8 +2,6 @@ import os
 import sys
 import random
 import logging
-import asyncio
-import nest_asyncio
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
@@ -25,9 +23,6 @@ from prediction import (
     LOTTERY_HISTORY,
 )
 
-# ---------- nest_asyncio apply ----------
-nest_asyncio.apply()
-
 # ---------- Logging ----------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -48,24 +43,18 @@ _match_counter = 0
 # ============================================================
 
 def fetch_thai_results_from_web() -> dict:
-    """
-    https://www.lottery.co.th/tag/lotto ကနေ ထိုင်းထီဂဏန်းတွေကို ဖတ်ယူတယ်
-    """
+    """https://www.lottery.co.th/tag/lotto ကနေ ထိုင်းထီဂဏန်းတွေကို ဖတ်ယူတယ်"""
     url = "https://www.lottery.co.th/tag/lotto"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
     try:
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
-        
         soup = BeautifulSoup(response.content, "html.parser")
         
-        # ဝက်ဆိုက်ရဲ့ HTML structure ကို ကြည့်ပြီး ဂဏန်းတွေကို ရှာတယ်
         results = {}
         
-        # ပထမဆုကို ရှာတယ်
+        # ပထမဆု
         first_prize = soup.find("div", class_="first-prize")
         if first_prize:
             text = first_prize.get_text(strip=True)
@@ -83,18 +72,19 @@ def fetch_thai_results_from_web() -> dict:
             if numbers:
                 results["2digit"] = numbers[0]
         
-        # ၃လုံးရှေ့နဲ့ နောက်
-        three_digit_front = soup.find("div", class_="three-digit-front")
-        if three_digit_front:
-            text = three_digit_front.get_text(strip=True)
+        # ၃လုံးရှေ့
+        three_front = soup.find("div", class_="three-digit-front")
+        if three_front:
+            text = three_front.get_text(strip=True)
             import re
             numbers = re.findall(r'\d+', text)
             if numbers:
                 results["3digit_front"] = numbers
         
-        three_digit_back = soup.find("div", class_="three-digit-back")
-        if three_digit_back:
-            text = three_digit_back.get_text(strip=True)
+        # ၃လုံးနောက်
+        three_back = soup.find("div", class_="three-digit-back")
+        if three_back:
+            text = three_back.get_text(strip=True)
             import re
             numbers = re.findall(r'\d+', text)
             if numbers:
@@ -117,18 +107,13 @@ def fetch_thai_results_from_web() -> dict:
 
 
 def fetch_laos_results_from_web() -> dict:
-    """
-    https://laosassociationlottery.com/en/home/ ကနေ လာအိုထီဂဏန်းတွေကို ဖတ်ယူတယ်
-    """
+    """https://laosassociationlottery.com/en/home/ ကနေ လာအိုထီဂဏန်းတွေကို ဖတ်ယူတယ်"""
     url = "https://laosassociationlottery.com/en/home/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
     try:
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
-        
         soup = BeautifulSoup(response.content, "html.parser")
         
         results = {}
@@ -906,7 +891,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # ============================================================
-# MAIN
+# MAIN (Synchronous version for Render Background Worker)
 # ============================================================
 def main() -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -948,8 +933,5 @@ def main() -> None:
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
-# ============================================================
-# ENTRY POINT
-# ============================================================
 if __name__ == "__main__":
     main()
